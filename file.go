@@ -80,7 +80,9 @@ func (f File) DryRun(ctx context.Context) ([]Outcome, error) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			results = append(results, issue.Fix(ctx, op))
+			if outcome := issue.Fix(ctx, op); outcome != nil {
+				results = append(results, outcome)
+			}
 		}
 		return nil
 	})
@@ -100,7 +102,9 @@ func (f File) Fix(ctx context.Context) ([]Outcome, error) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			results = append(results, issue.Fix(ctx, op))
+			if outcome := issue.Fix(ctx, op); outcome != nil {
+				results = append(results, outcome)
+			}
 		}
 		return nil
 	})
