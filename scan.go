@@ -2,6 +2,8 @@ package filehealth
 
 import (
 	"context"
+	"errors"
+	"os"
 )
 
 // scanHandler is used to report issues encountered by the scanner.
@@ -25,8 +27,18 @@ func (issue ScanIssue) Handler() IssueHandler {
 	return scanHandler{}
 }
 
-// Description returns a string describing the issue.
+// Summary returns a short summary of the issue.
+func (issue ScanIssue) Summary() string {
+	return "access failure"
+}
+
+// Description returns a description of the issue. It may return an empty
+// string if the information provided by the summary is sufficient.
 func (issue ScanIssue) Description() string {
+	var pathErr *os.PathError
+	if errors.As(issue.Err, &pathErr) {
+		return pathErr.Op + ": " + pathErr.Err.Error()
+	}
 	return issue.Err.Error()
 }
 

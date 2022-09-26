@@ -196,9 +196,15 @@ func (issue TimeIssue) Handler() IssueHandler {
 	return issue.TimeHandler
 }
 
-// Resolution returns a string describing a proposed resolution to the issue.
-func (issue TimeIssue) Description() string {
+// Summary returns a short summary of the issue.
+func (issue TimeIssue) Summary() string {
 	return issue.Type.String()
+}
+
+// Description returns a description of the issue. It may return an empty
+// string if the information provided by the summary is sufficient.
+func (issue TimeIssue) Description() string {
+	return ""
 }
 
 // Resolution returns a string describing a proposed resolution to the issue.
@@ -241,7 +247,7 @@ func (issue TimeIssue) Fix(ctx context.Context, op *Operation) Outcome {
 			return err
 		}
 
-		// Update the field with an issue
+		// Prepare a file information update
 		var update fileapi.BasicInfo
 
 		switch issue.Type {
@@ -257,6 +263,12 @@ func (issue TimeIssue) Fix(ctx context.Context, op *Operation) Outcome {
 			result.OldTime, result.NewTime = current.LastWriteTime, update.LastWriteTime
 		}
 
+		// Exit for dry runs
+		if op.DryRun() {
+			return ErrDryRun
+		}
+
+		// Update the affected timestamp(s)
 		return fileapi.SetFileInformationByHandle(syscall.Handle(file.Fd()), update)
 	})
 	return result
@@ -279,7 +291,7 @@ func (outcome TimeOutcome) Issue() Issue {
 // String returns a string representation of the issue.
 func (outcome TimeOutcome) String() string {
 	resolution := fmt.Sprintf("%s: %s → %s", outcome.issue.Type, outcome.OldTime.Format(timeFormat), outcome.NewTime.Format(timeFormat))
-	if outcome.err != nil {
+	if outcome.err != nil && outcome.err != ErrDryRun {
 		resolution += ": " + outcome.err.Error()
 	}
 	return resolution

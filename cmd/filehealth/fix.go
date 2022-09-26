@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/gentlemanautomaton/filehealth"
@@ -11,42 +10,34 @@ import (
 
 // FixCmd scans a set of files and fixes them.
 type FixCmd struct {
-	Paths []string `kong:"env='PATHS',name='paths',arg,required,help='Paths to search recursively.'"`
-	Batch int      `kong:"env='BATCH',name='batch',help='Maximum number of files to fix at a time.'"`
+	Paths       []string             `kong:"env='PATHS',name='paths',arg,required,help='Paths to search recursively.'"`
+	Include     []filehealth.Pattern `kong:"env='INCLUDE',name='include',help='Include files matching regular expression patterns.'"`
+	Exclude     []filehealth.Pattern `kong:"env='EXCLUDE',name='exclude',help='Exclude files matching regular expression patterns.'"`
+	ShowSkipped bool                 `kong:"env='SHOW_SKIPPED',name='skipped',help='Report on skipped files.'"`
+	ShowHealthy bool                 `kong:"env='SHOW_HEALTHY',name='healthy',help='Report on healthy files.'"`
+	Batch       int                  `kong:"env='BATCH',name='batch',help='Maximum number of files to fix at a time.'"`
+	DryRun      bool                 `kong:"env='DRYRUN',name='dry',help='Perform a dry run without modifying files.'"`
+}
+
+// Scanner returns a file health scanner configured according to the command.
+func (cmd FixCmd) Scanner() filehealth.Scanner {
+	return filehealth.Scanner{
+		Handlers:    buildHandlers(),
+		SendSkipped: cmd.ShowSkipped,
+		SendHealthy: cmd.ShowHealthy,
+		Include:     cmd.Include,
+		Exclude:     cmd.Exclude,
+	}
 }
 
 // Run executes the connect command.
 func (cmd FixCmd) Run(ctx context.Context) error {
-	handlers := buildHandlers()
-
+	// Scan each of the provided paths
 	for _, path := range cmd.Paths {
-		root := filehealth.Dir(filepath.Clean(path))
-
-		// Scan the directory
-		files, _, err := collectFiles(ctx, handlers, root, cmd.Batch)
-		if err != nil {
-			return err
-		}
-
-		// Continue on if there's no work to be done
-		if len(files) == 0 {
-			continue
-		}
-
-		// Prompt the user for confirmation of the proposed actions
-		filesCount := pluralize(len(files), "file", "files")
-		confirmed, err := prompt(fmt.Sprintf("Proceed with fixes affecting %s?", filesCount))
-		if err != nil {
-			fmt.Printf("Cancelling due to unexpected response: %v\n", err)
-			os.Exit(1)
-		}
-
-		if !confirmed {
-			fmt.Printf("Cancelled.\n")
-			return nil
-		}
-
-		if err := fixFiles(ctx, files); err != nil {
+		if err := cmd.runJob(ctx, path); err != nil {
+			if err == context.Canceled || err == context.DeadlineExceeded {
+				return nil
+			}
 			return err
 		}
 	}
@@ -54,22 +45,128 @@ func (cmd FixCmd) Run(ctx context.Context) error {
 	return nil
 }
 
-func fixFiles(ctx context.Context, files []filehealth.File) error {
+func (cmd FixCmd) runJob(ctx context.Context, path string) error {
+	// Prepare a scanner with the desired configuration
+	scanner := cmd.Scanner()
+
+	// Start a job
+	root := filehealth.Dir(filepath.Clean(path))
+	iter := scanner.ScanDir(root)
+
+	// Print the root directory
+	if abs, err := filepath.Abs(string(root)); err != nil {
+		fmt.Printf("----%s----\n", root)
+	} else {
+		fmt.Printf("----%s----\n", abs)
+	}
+
+	// If no batch was specified, just use a really high value
+	batch := cmd.Batch
+	if batch <= 0 {
+		batch = 1 << 30
+	}
+
+	// Scan and fix files in batches
+	for done := false; !done; {
+		prealloc := batch
+		if prealloc > 4096 {
+			prealloc = 4096
+		}
+
+		files := make([]filehealth.File, 0, prealloc)
+		unhealthy := 0
+		for i := 0; i < batch; i++ {
+			if done = !iter.Scan(ctx); done {
+				break
+			}
+
+			file := iter.File()
+			if desc := file.Description(); desc != "" {
+				fmt.Println(file.Description())
+			} else {
+				fmt.Println(file)
+			}
+			files = append(files, file)
+
+			if len(file.Issues) > 0 {
+				unhealthy++
+			}
+		}
+
+		// Stop looping if we encountered an error or there were no more
+		// files in the last batch
+		if done {
+			if err := iter.Err(); err != nil {
+				return err
+			}
+			if unhealthy == 0 {
+				break
+			}
+		}
+
+		// If healthy or skipped files are being shown, we can go through an
+		// entire batch without having something to fix. If so, ask the user
+		// whether they want to continue.
+		if unhealthy == 0 {
+			filesCount := pluralize(len(files), "file", "files")
+			confirmed, err := promptEnter(fmt.Sprintf("No issues found in %s. Continue?", filesCount))
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				return context.Canceled
+			}
+			continue
+		}
+
+		// Prompt the user for confirmation of the proposed actions
+		filesCount := pluralize(unhealthy, "file", "files")
+		confirmed, err := promptYesNo(fmt.Sprintf("Proceed with fixes affecting %s?", filesCount))
+		if err != nil {
+			return err
+		}
+
+		if !confirmed {
+			continue
+		}
+
+		fixFiles(ctx, files, cmd.DryRun)
+	}
+
+	// Ensure the iterator gets closed
+	iter.Close()
+
+	// Print a summary
+	fmt.Printf("----%s (%s)----\n", iter.Stats(), iter.Duration())
+
+	// Report whether the job was interrupted
+	return iter.Err()
+}
+
+func fixFiles(ctx context.Context, files []filehealth.File, dry bool) error {
 	for f := range files {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		file := &files[f]
-		outcomes, err := file.Fix(ctx)
-		if err != nil {
-			fmt.Printf("FAILED: %s: %v\n", file.Path, err)
+		var outcomes []filehealth.Outcome
+		if dry {
+			outcomes, _ = file.DryRun(ctx)
+		} else {
+			outcomes, _ = file.Fix(ctx)
 		}
-		for _, outcome := range outcomes {
-			if outcome.Err() != nil {
-				fmt.Printf("FAILED: %s: %s\n", file.Path, outcome)
+		for i, outcome := range outcomes {
+			prefix := ""
+			if err := outcome.Err(); err != nil {
+				if err == filehealth.ErrDryRun {
+					prefix = "DRY RUN"
+				} else {
+					prefix = "FAILED"
+				}
 			} else {
-				fmt.Printf("FIXED: %s: %s\n", file.Path, outcome)
+				prefix = "FIXED"
 			}
+			fmt.Printf("%s: [%d.%d] %s: \"%s\": %s\n", prefix, file.Index, i, outcome.Issue().Summary(), file.Path, outcome)
 		}
 	}
 	return nil

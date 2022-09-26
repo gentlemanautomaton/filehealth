@@ -2,88 +2,74 @@ package filehealth
 
 import (
 	"context"
-	"io/fs"
 	"time"
 )
 
 // Scanner scans a set of files for issues identified by its issue handlers.
 type Scanner struct {
+	// Handlers examine each file passing through the scanner's filters and
+	// determine whether they have issues. They determine what constitutes an "issue".
 	Handlers []IssueHandler
+
+	// Include is a filter that limits the number of files scanned. If
+	// provided, only files with names matching at least one pattern will
+	// be scanned.
+	Include []Pattern
+
+	// Exclude is a filter that limits the number of files scanned. If
+	// provided, only files with names that don't match any of its patterns
+	// will be scanned.
+	Exclude []Pattern
+
+	// SendSkipped requests that skipped files, those that don't pass the
+	// inclusion and exclusion filters, be sent to the iterator.
+	SendSkipped bool
+
+	// SendHealthy requests that healthy files, those without any issues, be
+	// sent to the iterator.
+	SendHealthy bool
 }
 
-// func (s Scanner) ScanFS(ctx context.Context, fsys fs.FS) ([]File, Summary, error) {
-// ScanFS causes the scanner to scan the given file system directory.
-func (s Scanner) ScanDir(ctx context.Context, root Dir) ([]File, Summary, error) {
-	var files []File
+// ScanDir causes the scanner to scan the given file system directory.
+func (s Scanner) ScanDir(root Dir) *FileIter {
+	// Prepare a cancellation function that the iterator can use to stop the
+	// job.
+	ctx, cancel := context.WithCancel(context.Background())
 
-	summary := Summary{Start: time.Now()}
+	// Prepare a communications channel
+	ch := make(chan fileIterUpdate)
 
-	err := fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	// Note the start time
+	now := time.Now()
 
-		if path == "." {
-			return nil
-		}
+	// Prepare a file iterator that will be returned
+	iter := FileIter{
+		start:  now,
+		ch:     ch,
+		cancel: cancel,
+		end:    now,
+	}
 
-		summary.Scanned++
+	// Prepare a job
+	job := scanJob{
+		root:        root,
+		ch:          ch,
+		cancel:      cancel,
+		handlers:    s.Handlers,
+		include:     s.Include,
+		exclude:     s.Exclude,
+		sendSkipped: s.SendSkipped,
+		sendHealthy: s.SendHealthy,
+	}
 
-		file := File{
-			Root:  root,
-			Path:  path,
-			Index: summary.Scanned,
-		}
+	// Execute the job
+	go executeJob(ctx, job)
 
-		// If an error was reported, such as access denied, record it as a
-		// scan error and carry on
-		if err != nil {
-			file.Issues = append(file.Issues, ScanIssue{Err: err})
-			files = append(files, file)
-			return nil
-		}
-
-		// Attempt to collect more information about the file
-		info, err := d.Info()
-		if err != nil {
-			file.Issues = append(file.Issues, ScanIssue{Err: err})
-		} else {
-			file.Name = info.Name()
-			file.Size = info.Size()
-			file.Mode = info.Mode()
-			file.ModTime = info.ModTime()
-		}
-
-		// Ask each of the handlers to examine the file and return a set
-		// of issues
-		if len(s.Handlers) > 0 {
-			exam := Examination{
-				root:  file.Root,
-				path:  file.Path,
-				index: file.Index,
-				info:  info,
-			}
-			for _, h := range s.Handlers {
-				file.Issues = append(file.Issues, h.Examine(ctx, &exam)...)
-			}
-		}
-
-		// If issues were encountered, add the file to the files list.
-		if count := len(file.Issues); count > 0 {
-			files = append(files, file)
-			summary.Matched++
-			summary.Issues += count
-		}
-
-		return nil
-	})
-
-	summary.End = time.Now()
-
-	return files, summary, err
+	// Return the file iterator
+	return &iter
 }
 
-// ScanFS scans the given file system for issues.
-func ScanDir(ctx context.Context, root Dir, handlers ...IssueHandler) ([]File, Summary, error) {
-	return Scanner{Handlers: handlers}.ScanDir(ctx, root)
+// ScanDir scans the given file system directory for issues.
+func ScanDir(ctx context.Context, root Dir, handlers ...IssueHandler) *FileIter {
+	return Scanner{Handlers: handlers}.ScanDir(root)
 }

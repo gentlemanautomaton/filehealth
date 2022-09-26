@@ -19,7 +19,11 @@ type Issue interface {
 	// Handler returns the Handler that's responsible for handling the issue.
 	Handler() IssueHandler
 
-	// Description returns a string describing the issue.
+	// Summary returns a short summary of the issue.
+	Summary() string
+
+	// Description returns a description of the issue. It may return an empty
+	// string if the information provided by the summary is sufficient.
 	Description() string
 
 	// Resolution returns a string describing the fix. It returns an empty

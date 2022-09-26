@@ -72,9 +72,15 @@ func (issue AttrIssue) Handler() IssueHandler {
 	return issue.AttrHandler
 }
 
-// Resolution returns a string describing a proposed resolution to the issue.
+// Summary returns a short summary of the issue.
+func (issue AttrIssue) Summary() string {
+	return fmt.Sprintf("unwanted attributes %s", issue.Matched.Join(",", fileattr.FormatCode))
+}
+
+// Description returns a description of the issue. It may return an empty
+// string if the information provided by the summary is sufficient.
 func (issue AttrIssue) Description() string {
-	return fmt.Sprintf("unwanted attributes: %s", issue.Matched.Join(",", fileattr.FormatCode))
+	return ""
 }
 
 // Resolution returns a string describing a proposed resolution to the issue.
@@ -132,6 +138,11 @@ func (issue AttrIssue) Fix(ctx context.Context, op *Operation) Outcome {
 		outcome.OldAttributes = attrs
 		outcome.NewAttributes = update.FileAttributes
 
+		// Exit for dry runs
+		if op.DryRun() {
+			return ErrDryRun
+		}
+
 		return fileapi.SetFileInformationByHandle(syscall.Handle(file.Fd()), update)
 	})
 	return outcome
@@ -155,11 +166,11 @@ func (outcome AttrOutcome) Issue() Issue {
 func (outcome AttrOutcome) String() string {
 	before := outcome.OldAttributes.Join(",", fileattr.FormatCode)
 	after := outcome.NewAttributes.Join(",", fileattr.FormatCode)
-	resolution := fmt.Sprintf("attribute change: %s → %s", before, after)
-	if outcome.err != nil {
-		resolution += ": " + outcome.err.Error()
+	s := fmt.Sprintf("attribute change: %s → %s", before, after)
+	if outcome.err != nil && outcome.err != ErrDryRun {
+		s += ": " + outcome.err.Error()
 	}
-	return resolution
+	return s
 }
 
 // Err returns an error if one was encountered during the operation.

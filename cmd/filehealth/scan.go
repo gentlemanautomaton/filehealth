@@ -10,16 +10,32 @@ import (
 
 // ScanCmd scans a set of files without modifying them.
 type ScanCmd struct {
-	Paths []string `kong:"env='PATHS',name='paths',arg,required,help='Paths to search recursively.'"`
+	Paths       []string             `kong:"env='PATHS',name='paths',arg,required,help='Paths to search recursively.'"`
+	Include     []filehealth.Pattern `kong:"env='INCLUDE',name='include',help='Include files matching regular expression pattern.'"`
+	Exclude     []filehealth.Pattern `kong:"env='EXCLUDE',name='exclude',help='Exclude files matching regular expression pattern.'"`
+	ShowSkipped bool                 `kong:"env='SHOW_SKIPPED',name='skipped',help='Report on skipped files.'"`
+	ShowHealthy bool                 `kong:"env='SHOW_HEALTHY',name='healthy',help='Report on healthy files.'"`
+}
+
+// Scanner returns a file health scanner configured according to the command.
+func (cmd ScanCmd) Scanner() filehealth.Scanner {
+	return filehealth.Scanner{
+		Handlers:    buildHandlers(),
+		SendSkipped: cmd.ShowSkipped,
+		SendHealthy: cmd.ShowHealthy,
+		Include:     cmd.Include,
+		Exclude:     cmd.Exclude,
+	}
 }
 
 // Run executes the connect command.
 func (cmd ScanCmd) Run(ctx context.Context) error {
-	handlers := buildHandlers()
-
+	// Scan each of the provided paths
 	for _, path := range cmd.Paths {
-		root := filehealth.Dir(filepath.Clean(path))
-		if _, _, err := collectFiles(ctx, handlers, root, 0); err != nil {
+		if err := cmd.runJob(ctx, path); err != nil {
+			if err == context.Canceled || err == context.DeadlineExceeded {
+				return nil
+			}
 			return err
 		}
 	}
@@ -27,21 +43,37 @@ func (cmd ScanCmd) Run(ctx context.Context) error {
 	return nil
 }
 
-func collectFiles(ctx context.Context, handlers []filehealth.IssueHandler, root filehealth.Dir, batch int) ([]filehealth.File, filehealth.Summary, error) {
-	fmt.Printf("----%s----\n", root)
-	files, summary, err := filehealth.ScanDir(ctx, root, handlers...)
-	if err != nil {
-		return files, summary, err
+func (cmd ScanCmd) runJob(ctx context.Context, path string) error {
+	// Prepare a scanner with the desired configuration
+	scanner := cmd.Scanner()
+
+	// Start a job
+	root := filehealth.Dir(filepath.Clean(path))
+	iter := scanner.ScanDir(root)
+
+	// Print the root directory
+	if abs, err := filepath.Abs(string(root)); err != nil {
+		fmt.Printf("----%s----\n", root)
+	} else {
+		fmt.Printf("----%s----\n", abs)
 	}
-	if batch > 0 && batch < len(files) {
-		files = files[:batch]
-	}
-	for f := range files {
-		file := &files[f]
+
+	// Process each scanned file
+	for iter.Scan(ctx) {
+		file := iter.File()
 		if desc := file.Description(); desc != "" {
 			fmt.Println(file.Description())
+		} else {
+			fmt.Println(file)
 		}
 	}
-	fmt.Printf("----%s----\n", summary)
-	return files, summary, nil
+
+	// Ensure the iterator gets closed
+	iter.Close()
+
+	// Print a summary
+	fmt.Printf("----%s (%s)----\n", iter.Stats(), iter.Duration())
+
+	// Report whether the job was interrupted
+	return iter.Err()
 }

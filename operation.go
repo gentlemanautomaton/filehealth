@@ -15,6 +15,7 @@ type FileFunc func(fs.File) error
 // Operation is an operation on a file that has been scanned.
 type Operation struct {
 	scanned File
+	dry     bool
 
 	file fs.File
 
@@ -32,6 +33,11 @@ func (op *Operation) Root() Dir {
 // Index returns the index of the file when it was examined.
 func (op *Operation) Index() int {
 	return op.scanned.Index
+}
+
+// DryRun returns true if the operation is a dry run.
+func (op *Operation) DryRun() bool {
+	return op.dry
 }
 
 // OriginalName returns the name of the file when it was examined.

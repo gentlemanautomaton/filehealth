@@ -62,9 +62,15 @@ func (issue NameIssue) Handler() IssueHandler {
 	return issue.NameHandler
 }
 
-// Resolution returns a string describing a proposed resolution to the issue.
-func (issue NameIssue) Description() string {
+// Summary returns a short summary of the issue.
+func (issue NameIssue) Summary() string {
 	return "leading or trailing space"
+}
+
+// Description returns a description of the issue. It may return an empty
+// string if the information provided by the summary is sufficient.
+func (issue NameIssue) Description() string {
+	return ""
 }
 
 // Resolution returns a string describing a proposed resolution to the issue.
@@ -124,7 +130,12 @@ func (issue NameIssue) Fix(ctx context.Context, op *Operation) Outcome {
 		// Close open file handles so they don't interfere with the move
 		op.Close()
 
-		// Rename the file
+		// Exit for dry runs
+		if op.DryRun() {
+			return ErrDryRun
+		}
+
+		// Perform the file rename operation
 		return os.Rename(from, to)
 
 		//return nil
@@ -164,20 +175,20 @@ type NameOutcome struct {
 }
 
 // Issue returns the issue this outcome pertains to.
-func (n NameOutcome) Issue() Issue {
-	return n.issue
+func (outcome NameOutcome) Issue() Issue {
+	return outcome.issue
 }
 
 // String returns a string representation of the issue.
-func (n NameOutcome) String() string {
-	resolution := fmt.Sprintf("name change: \"%s\" → \"%s\"", n.OldFilePath, n.NewFilePath)
-	if n.err != nil {
-		resolution += ": " + n.err.Error()
+func (outcome NameOutcome) String() string {
+	resolution := fmt.Sprintf("name change: \"%s\" → \"%s\"", outcome.OldFilePath, outcome.NewFilePath)
+	if outcome.err != nil && outcome.err != ErrDryRun {
+		resolution += ": " + outcome.err.Error()
 	}
 	return resolution
 }
 
 // Err returns an error if one was encountered during the operation.
-func (n NameOutcome) Err() error {
-	return n.err
+func (outcome NameOutcome) Err() error {
+	return outcome.err
 }
