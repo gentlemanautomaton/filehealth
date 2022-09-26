@@ -131,12 +131,17 @@ func (cmd FixCmd) runJob(ctx context.Context, path string) error {
 		}
 
 		fixFiles(ctx, files, cmd.DryRun)
+
+		if !done {
+			// Print a summary after each batch
+			fmt.Printf("----%s (%s)----\n", iter.Stats(), iter.Duration())
+		}
 	}
 
 	// Ensure the iterator gets closed
 	iter.Close()
 
-	// Print a summary
+	// Print a final summary
 	fmt.Printf("----%s (%s)----\n", iter.Stats(), iter.Duration())
 
 	// Report whether the job was interrupted
