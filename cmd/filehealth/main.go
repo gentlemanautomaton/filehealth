@@ -15,7 +15,7 @@ func main() {
 	defer stop()
 
 	var cli struct {
-		Scan ScanCmd `kong:"cmd,help='Scans a set of file paths resursively for issues.'"`
+		Scan ScanCmd `kong:"cmd,help='Scans a set of file paths recursively for issues.'"`
 		Fix  FixCmd  `kong:"cmd,help='Scans and optionally fixes files with issues.'"`
 	}
 
