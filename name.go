@@ -181,10 +181,28 @@ func (outcome NameOutcome) Issue() Issue {
 
 // String returns a string representation of the issue.
 func (outcome NameOutcome) String() string {
-	resolution := fmt.Sprintf("name change: \"%s\" → \"%s\"", outcome.OldFilePath, outcome.NewFilePath)
+	// Report the full, absolute paths that were fed into the os.Rename call,
+	// if possible
+	oldPath := outcome.OldFilePath
+	newPath := outcome.NewFilePath
+
+	// If the assessment stopped short of calculating the full paths, report
+	// the paths from the scan
+	if oldPath == "" {
+		oldPath = outcome.issue.OriginalName
+	}
+	if newPath == "" {
+		newPath = outcome.issue.NewName
+	}
+
+	// Describe the file rename changes in the resolution
+	resolution := fmt.Sprintf("name change: \"%s\" → \"%s\"", oldPath, newPath)
+
+	// Append any errors
 	if outcome.err != nil && outcome.err != ErrDryRun {
 		resolution += ": " + outcome.err.Error()
 	}
+
 	return resolution
 }
 
