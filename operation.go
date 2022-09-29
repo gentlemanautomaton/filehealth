@@ -82,11 +82,13 @@ func (op *Operation) FileChanged() (bool, error) {
 				if fi.Name() != op.scanned.Name {
 					return true
 				}
-				if fi.Size() != op.scanned.Size {
-					return true
-				}
 				if fi.Mode() != op.scanned.Mode {
 					return true
+				}
+				if !op.scanned.Mode.IsDir() {
+					if fi.Size() != op.scanned.Size {
+						return true
+					}
 				}
 				if !fi.ModTime().Equal(op.scanned.ModTime) {
 					return true
