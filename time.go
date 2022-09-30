@@ -55,7 +55,7 @@ func (h TimeHandler) Examine(ctx context.Context, exam *Examination) []Issue {
 
 	// Fall back to the modification time only, if necessary
 	if !ok {
-		if mt := info.ModTime(); h.afterMax(mt) || h.beforeMin(mt) {
+		if mt := info.ModTime(); !h.timeIsOK(mt) {
 			return []Issue{TimeIssue{
 				Type:        FileTimeLastWrite,
 				Time:        mt,
@@ -68,29 +68,39 @@ func (h TimeHandler) Examine(ctx context.Context, exam *Examination) []Issue {
 	// Build a list of file timestamp issues
 	var issues []Issue
 
+	// Time conversion
+	var (
+		creationTime = filetimeToTime(data.CreationTime)
+		accessTime   = filetimeToTime(data.LastAccessTime)
+		writeTime    = filetimeToTime(data.LastWriteTime)
+	)
+
 	// Creation
-	if ct := filetimeToTime(data.CreationTime); !ct.IsZero() && (h.afterMax(ct) || h.beforeMin(ct)) {
+	if !h.timeIsOK(creationTime) {
 		issues = append(issues, TimeIssue{
 			Type:        FileTimeCreation,
-			Time:        ct,
+			Time:        creationTime,
+			Fallback:    h.selectFallbackTime(writeTime, accessTime),
 			TimeHandler: h,
 		})
 	}
 
 	// Access
-	if at := filetimeToTime(data.LastAccessTime); !at.IsZero() && (h.afterMax(at) || h.beforeMin(at)) {
+	if !h.timeIsOK(accessTime) {
 		issues = append(issues, TimeIssue{
 			Type:        FileTimeAccess,
-			Time:        at,
+			Time:        accessTime,
+			Fallback:    h.selectFallbackTime(writeTime, creationTime),
 			TimeHandler: h,
 		})
 	}
 
 	// LastWrite
-	if wt := filetimeToTime(data.LastWriteTime); !wt.IsZero() && (h.afterMax(wt) || h.beforeMin(wt)) {
+	if !h.timeIsOK(writeTime) {
 		issues = append(issues, TimeIssue{
 			Type:        FileTimeLastWrite,
-			Time:        wt,
+			Time:        writeTime,
+			Fallback:    h.selectFallbackTime(creationTime, accessTime),
 			TimeHandler: h,
 		})
 	}
@@ -107,9 +117,35 @@ func (h TimeHandler) Examine(ctx context.Context, exam *Examination) []Issue {
 	return issues
 }
 
+// timeIsOK returns true if the given time meets the requirements of the
+// time handler.
+func (h TimeHandler) timeIsOK(t time.Time) bool {
+	if t.IsZero() || t.UnixNano() == 0 {
+		return false
+	}
+	if h.afterMax(t) || h.beforeMin(t) {
+		return false
+	}
+	return true
+}
+
+// selectFallbackTime returns the first acceptable time from the list, or
+// the zero time if none are acceptable.
+func (h TimeHandler) selectFallbackTime(times ...time.Time) time.Time {
+	for _, t := range times {
+		if h.timeIsOK(t) {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
 // adjustedMax returns the max time plus elapsed time since reference.
 func (h TimeHandler) adjustedMax() time.Time {
-	if h.Max.IsZero() || h.Reference.IsZero() {
+	if h.Max.IsZero() {
+		return time.Now()
+	}
+	if h.Reference.IsZero() {
 		return h.Max
 	}
 	return h.Max.Add(time.Since(h.Reference))
@@ -117,7 +153,10 @@ func (h TimeHandler) adjustedMax() time.Time {
 
 // adjustedMin returns the min time plus elapsed time since reference.
 func (h TimeHandler) adjustedMin() time.Time {
-	if h.Min.IsZero() || h.Reference.IsZero() {
+	if h.Min.IsZero() {
+		return time.Now()
+	}
+	if h.Reference.IsZero() {
 		return h.Min
 	}
 	return h.Min.Add(time.Since(h.Reference))
@@ -146,7 +185,13 @@ func (h TimeHandler) beforeMin(t time.Time) bool {
 }
 
 // NewTime returns the given time, constrained to the bounds of Min and Max.
-func (h TimeHandler) NewTime(t time.Time) time.Time {
+func (h TimeHandler) NewTime(t, fallback time.Time) time.Time {
+	if t.IsZero() || t.UnixNano() == 0 {
+		if fallback.IsZero() || !h.timeIsOK(fallback) {
+			return h.adjustedMin()
+		}
+		return fallback
+	}
 	if h.afterMax(t) {
 		return h.adjustedMax()
 	}
@@ -185,8 +230,9 @@ func (t FileTimeType) String() string {
 
 // TimeIssue describes a file modification time issue.
 type TimeIssue struct {
-	Type FileTimeType
-	Time time.Time
+	Type     FileTimeType
+	Time     time.Time
+	Fallback time.Time
 
 	TimeHandler
 }
@@ -209,7 +255,7 @@ func (issue TimeIssue) Description() string {
 
 // Resolution returns a string describing a proposed resolution to the issue.
 func (issue TimeIssue) Resolution() string {
-	proposed := issue.NewTime(issue.Time)
+	proposed := issue.NewTime(issue.Time, issue.Fallback)
 	if proposed.Equal(issue.Time) {
 		return ""
 	}
@@ -252,14 +298,14 @@ func (issue TimeIssue) Fix(ctx context.Context, op *Operation) Outcome {
 
 		switch issue.Type {
 		case FileTimeCreation:
-			update.CreationTime = issue.NewTime(current.CreationTime)
+			update.CreationTime = issue.NewTime(current.CreationTime, issue.Fallback)
 			result.OldTime, result.NewTime = current.CreationTime, update.CreationTime
 		case FileTimeAccess:
-			update.LastAccessTime = issue.NewTime(current.LastAccessTime)
+			update.LastAccessTime = issue.NewTime(current.LastAccessTime, issue.Fallback)
 			result.OldTime, result.NewTime = current.LastAccessTime, update.LastAccessTime
 		case FileTimeLastWrite, FileTimeChange:
-			update.LastWriteTime = issue.NewTime(current.LastWriteTime)
-			update.ChangeTime = issue.NewTime(current.ChangeTime)
+			update.LastWriteTime = issue.NewTime(current.LastWriteTime, issue.Fallback)
+			update.ChangeTime = issue.NewTime(current.ChangeTime, issue.Fallback)
 			result.OldTime, result.NewTime = current.LastWriteTime, update.LastWriteTime
 		}
 
